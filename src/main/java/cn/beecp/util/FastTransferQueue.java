@@ -40,19 +40,19 @@ public final class FastTransferQueue<E> extends AbstractQueue<E> {
      * Waiter in waiting status
      */
     private static final State STS_WAITING = new State();
+
     /**
-     * Waiter wait timeout
+     * Waiter failed to get element
      */
-    private static final State STS_TIMEOUT = new State();
-    /**
-     * Waiter thread interrupt
-     */
-    private static final State STS_INTERRUPTED = new State();
+    private static final State STS_FAILED = new State();
 
     /**
      * nanoSecond,spin min time value
      */
     private static final long spinForTimeoutThreshold = 1000L;
+
+
+    private static final int maxTimedSpins = (Runtime.getRuntime().availableProcessors() < 2) ? 0 : 32;
 
     /**
      * Thread Interrupted Exception
@@ -157,42 +157,47 @@ public final class FastTransferQueue<E> extends AbstractQueue<E> {
      *         specified waiting time elapses before an element is available
      * @throws InterruptedException if interrupted while waiting
      */
-	public E poll(long timeout, TimeUnit unit) throws InterruptedException {
-		E e = elementQueue.poll();
-		if(e != null)return e;
-	
-		boolean isNotTimeout = true;
-		boolean isInterrupted = false;
+    public E poll(long timeout, TimeUnit unit) throws InterruptedException {
+        E e = elementQueue.poll();
+        if(e != null)return e;
 
-		Waiter waiter = new Waiter();
-		Thread thread = waiter.thread;
-		waiterQueue.offer(waiter);
-		final long deadline = nanoTime() + unit.toNanos(timeout);
+        boolean isFailed=false;
+        boolean isInterrupted=false;
 
-		while (true) {
-			Object state = waiter.state;
-			if (!(state instanceof State))
-				return (E)state;
+        Waiter waiter = new Waiter();
+        Thread thread = waiter.thread;
+        waiterQueue.offer(waiter);
 
-			if (isInterrupted) {
-				if (TransferUpdater.compareAndSet(waiter, state, STS_INTERRUPTED)) {
-					waiterQueue.remove(waiter);
-					throw RequestInterruptException;
-				}
-				continue;
-			}
+        int spinSize =(waiterQueue.peek()==waiter)?maxTimedSpins:0;
+        final long deadline = nanoTime() + unit.toNanos(timeout);
 
-			if (isNotTimeout && (isNotTimeout = (timeout = deadline - nanoTime()) > 0L)) {
-			    if (timeout > spinForTimeoutThreshold && TransferUpdater.compareAndSet(waiter, state, STS_WAITING)) {
-					LockSupport.parkNanos(this, timeout);
-                    isInterrupted=thread.isInterrupted();
-				}
-			} else if (TransferUpdater.compareAndSet(waiter, state, STS_TIMEOUT)) {
-				waiterQueue.remove(waiter);
-				return null;
-			}
-		}
-	}
+        while (true) {
+            Object state = waiter.state;
+            if (!(state instanceof State)) {
+                return (E) state;
+            }else if (isFailed) {
+                if (TransferUpdater.compareAndSet(waiter, state,STS_FAILED)) {
+                    waiterQueue.remove(waiter);
+                    if (isInterrupted)
+                        throw RequestInterruptException;
+                    else
+                        return null;
+                }
+            } else if ((timeout = deadline - nanoTime()) > 0L) {
+                if (spinSize > 0) {
+                    --spinSize;
+                } else if (timeout > spinForTimeoutThreshold && TransferUpdater.compareAndSet(waiter, state, STS_WAITING)) {
+                    LockSupport.parkNanos(this, timeout);
+                    if (thread.isInterrupted()) {
+                        isFailed=true;
+                        isInterrupted=true;
+                    }
+                }
+            } else {//timeout
+                isFailed=true;
+            }
+        }
+    }
 
     private static final class State { }
     private static final class Waiter {
