@@ -16,7 +16,9 @@
 package cn.beecp.util;
 
 import java.util.AbstractQueue;
+import java.util.Collection;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
@@ -51,7 +53,9 @@ public final class FastTransferQueue<E> extends AbstractQueue<E> {
      */
     private static final long spinForTimeoutThreshold = 1000L;
 
-
+    /**
+     * The number of times to spin before blocking in timed waits.
+     */
     private static final int maxTimedSpins = (Runtime.getRuntime().availableProcessors() < 2) ? 0 : 32;
 
     /**
@@ -197,6 +201,39 @@ public final class FastTransferQueue<E> extends AbstractQueue<E> {
                 isFailed=true;
             }
         }
+    }
+
+    /**
+     * Queries whether any threads are waiting for element.
+     *
+     * @return {@code true} if there may be other threads waiting
+     */
+    public final boolean hasQueuedThreads() {
+        return !waiterQueue.isEmpty();
+    }
+
+    /**
+     * Returns an estimate of the number of threads  waiting for element.
+     *
+     * @return the estimated number of threads waiting for this lock
+     */
+    public final int getQueueLength() {
+        return waiterQueue.size();
+    }
+
+    /**
+     * Returns a collection containing threads that may be waiting for element.
+     *
+     * @return the collection of threads
+     */
+    public Collection<Thread> getQueuedThreads() {
+        LinkedList<Thread> threadList=new LinkedList<Thread>();
+        Iterator<Waiter> itor= waiterQueue.iterator();
+        while(itor.hasNext()){
+            Waiter waiter=itor.next();
+            threadList.add(waiter.thread);
+        }
+        return threadList;
     }
 
     private static final class State { }
